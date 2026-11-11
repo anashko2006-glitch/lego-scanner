@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Live LEGO Scanner</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { background-color: #0f172a; color: white; user-select: none; }
+    .viewport-container { position: relative; width: 100%; height: 60vh; overflow: hidden; }
+    video { width: 100%; height: 100%; object-fit: cover; }
+    .scanner-overlay {
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      width: 220px; height: 220px; border: 3px dashed #3b82f6; border-radius: 16px;
+      box-shadow: 0 0 0 4000px rgba(0, 0, 0, 0.4);
+    }
+  </style>
+</head>
+<body class="flex flex-col h-screen">
+
+  <!-- Видеоискатель -->
+  <div class="viewport-container bg-black flex items-center justify-center">
+    <video id="webcam" autoplay playsinline muted></video>
+    <div class="scanner-overlay"></div>
+    <div id="status-badge" class="absolute top-4 left-4 bg-slate-900/80 px-3 py-1 rounded-full text-xs font-semibold text-blue-400 border border-blue-500/30">
+      Готов к сканированию
+    </div>
+  </div>
+
+  <!-- Панель управления и результатов -->
+  <div class="flex-1 bg-slate-900 p-4 flex flex-col justify-between border-t border-slate-800">
+    <div id="result-card" class="bg-slate-800/90 rounded-xl p-4 border border-slate-700">
+      <div class="text-slate-400 text-xs uppercase tracking-wider mb-1">Наведите камеру на деталь</div>
+      <div id="part-title" class="text-base font-bold text-slate-200">Ожидание первого кадра...</div>
+      <div id="part-details" class="text-sm text-slate-400 mt-1">---</div>
+    </div>
+
+    <!-- Кнопки управления -->
+    <div class="grid grid-cols-2 gap-3 mt-4">
+      <button id="btn-toggle-scan" onclick="toggleScanning()" class="py-3 px-4 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl text-center">
+        ⏸ Пауза
+      </button>
+      <button onclick="Telegram.WebApp.close()" class="py-3 px-4 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold rounded-xl text-center border border-slate-700">
+        Закрыть
+      </button>
+    </div>
+  </div>
+
+  <!-- Скрытый Canvas для захвата кадров -->
+  <canvas id="capture-canvas" class="hidden"></canvas>
+
+  <script>
+    const tg = window.Telegram?.WebApp;
+    if (tg) tg.expand();
+
+    let isScanning = true;
+    let isProcessing = false;
+    let scanInterval = null;
+    let lastPartKey = "";
+    let cooldownTimer = null;
+
+    const video = document.getElementById('webcam');
+    const canvas = document.getElementById('capture-canvas');
+    const statusBadge = document.getElementById('status-badge');
+
+    // 1. Инициализация камеры
+    async function initCamera() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { exact: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } }
+        });
+        video.srcObject = stream;
+      } catch (err) {
+        // Если нет доступа к задней камере (на ПК / ноутбуке)
+        try {
+          const fallbackStream = await navigator.mediaDevices.getUserMedia({ video: true });
+          video.srcObject = fallbackStream;
+        } catch (e) {
+          updateStatus("Ошибка камеры: " + e.message, "red");
+        }
+      }
+    }
+
+    // 2. Цикл автоматического сканирования
+    function startScanningLoop() {
+      scanInterval = setInterval(async () => {
+        if (!isScanning || isProcessing) return;
+        await captureAndRecognize();
+      }, 1800); // Захват каждые 1.8 секунды
+    }
+
+    // 3. Захват кадра и отправка
+    async function captureAndRecognize() {
+      if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
+
+      isProcessing = true;
+      updateStatus("Сканирование...", "yellow");
+
+      // Рисуем текущий кадр в скрытый canvas
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      // Конвертируем в Blob
+      canvas.toBlob(async (blob) => {
+        if (!blob) { isProcessing = false; return; }
+
+        try {
+          const formData = new FormData();
+          formData.append("query_image", blob, "frame.jpg");
+
+          const res = await fetch("https://api.brickognize.com/internal/search/?external_catalogs=bricklink&predict_color=true", {
+            method: "POST",
+            body: formData
+          });
+
+          const data = await res.json();
+          handleRecognitionResult(data);
+        } catch (err) {
+          console.error("Ошибка распознавания:", err);
+          updateStatus("Ошибка сети", "red");
+        } finally {
+          isProcessing = false;
+        }
+      }, 'image/jpeg', 0.85);
+    }
+
+    // 4. Обработка результата от Brickognize
+    function handleRecognitionResult(data) {
+      if (!data.detected_items || data.detected_items.length === 0) {
+        updateStatus("Поиск...", "blue");
+        return;
+      }
+
+      const candidate = data.detected_items[0]?.candidate_items?.[0];
+      if (!candidate) return;
+
+      const partNum = candidate.id.replace("part-", "").replace("minifig-", "").split(',')[0].trim();
+      const partName = candidate.name || "Деталь LEGO";
+      const colorName = candidate.candidate_colors?.[0]?.name || "Не определен";
+      const currentPartKey = `${partNum}_${colorName}`.toLowerCase();
+
+      // Защита от дублей: если эта же деталь была зафиксирована секунду назад — пропускаем
+      if (currentPartKey === lastPartKey) {
+        updateStatus("Пропуск дубля...", "slate");
+        return;
+      }
+
+      // Обновляем данные на экране
+      document.getElementById('part-title').innerText = `${partNum} — ${partName}`;
+      document.getElementById('part-details').innerText = `Цвет: ${colorName}`;
+      updateStatus("Распознано! 🟢", "green");
+
+      // Вибрация от Telegram WebApp (Haptic Feedback)
+      if (tg?.HapticFeedback) {
+        tg.HapticFeedback.notificationOccurred('success');
+      }
+
+      // Включаем Cooldown (таймер защиты от повторного срабатывания)
+      lastPartKey = currentPartKey;
+      clearTimeout(cooldownTimer);
+      cooldownTimer = setTimeout(() => { lastPartKey = ""; }, 3500);
+    }
+
+    function toggleScanning() {
+      isScanning = !isScanning;
+      const btn = document.getElementById('btn-toggle-scan');
+      if (isScanning) {
+        btn.innerText = "⏸ Пауза";
+        btn.className = "py-3 px-4 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl text-center";
+        updateStatus("Сканирование активна", "blue");
+      } else {
+        btn.innerText = "▶️ Старт";
+        btn.className = "py-3 px-4 bg-green-600 hover:bg-green-500 text-white font-bold rounded-xl text-center";
+        updateStatus("Сканирование на паузе", "slate");
+      }
+    }
+
+    function updateStatus(text, color) {
+      statusBadge.innerText = text;
+      const colorMap = {
+        blue: "text-blue-400 border-blue-500/30",
+        green: "text-green-400 border-green-500/30",
+        yellow: "text-yellow-400 border-yellow-500/30",
+        red: "text-red-400 border-red-500/30",
+        slate: "text-slate-400 border-slate-500/30"
+      };
+      statusBadge.className = `absolute top-4 left-4 bg-slate-900/80 px-3 py-1 rounded-full text-xs font-semibold border ${colorMap[color] || colorMap.blue}`;
+    }
+
+    window.onload = () => {
+      initCamera();
+      startScanningLoop();
+    };
+  </script>
+</body>
+</html>
