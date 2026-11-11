@@ -139,19 +139,23 @@
 
       const partNum = candidate.id.replace("part-", "").replace("minifig-", "").split(',')[0].trim();
       const partName = candidate.name || "Деталь LEGO";
+      
+      // Получаем цвет из определений Brickognize
       const colorName = candidate.candidate_colors?.[0]?.name || "Не определен";
       const currentPartKey = `${partNum}_${colorName}`.toLowerCase();
 
       // Защита от дублей: если эта же деталь была зафиксирована секунду назад — пропускаем
       if (currentPartKey === lastPartKey) {
-        updateStatus("Пропуск дубля...", "slate");
         return;
       }
 
-      // Обновляем данные на экране
-      document.getElementById('part-title').innerText = `${partNum} — ${partName}`;
-      document.getElementById('part-details').innerText = `Цвет: ${colorName}`;
-      updateStatus("Распознано! 🟢", "green");
+      // 🟢 ВЫВОДИМ ТО САМОЕ СООБЩЕНИЕ, КОТОРОЕ ВЫ ХОТЕЛИ!
+      const recognitionText = `Деталь распознана: ${partNum} — ${colorName}`;
+      
+      // Обновляем данные на карточке экрана
+      document.getElementById('part-title').innerText = recognitionText;
+      document.getElementById('part-details').innerText = partName;
+      updateStatus("Успешно! 🟢", "green");
 
       // Вибрация от Telegram WebApp (Haptic Feedback)
       if (tg?.HapticFeedback) {
