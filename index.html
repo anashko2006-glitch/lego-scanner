@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>Live-сканер склада LEGO</title>
+  <title>Live-сканер LEGO</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -128,7 +128,7 @@
 <body>
 
   <div class="camera-box">
-    <span class="badge">Боевой режим склада</span>
+    <span class="badge" id="modeBadge">Боевой режим склада</span>
     <video id="video" autoplay playsinline muted></video>
     <div class="reticle"></div>
   </div>
@@ -148,6 +148,14 @@
 
   <script>
     const EDGE_FUNCTION_URL = "https://zpjmccnrfarkmmzvzbfj.supabase.co/functions/v1/telegram-bot";
+    const IS_CLIENT_MODE = new URLSearchParams(window.location.search).get("mode") === "client";
+
+    const modeBadge = document.getElementById("modeBadge");
+    if (IS_CLIENT_MODE && modeBadge) {
+      modeBadge.textContent = "Поиск по каталогу";
+      modeBadge.style.background = "rgba(10, 132, 255, 0.92)";
+      modeBadge.style.color = "#fff";
+    }
 
     if (window.Telegram && window.Telegram.WebApp) {
       window.Telegram.WebApp.ready();
@@ -267,13 +275,75 @@
       `;
     }
 
+    function renderClientCard(data) {
+      if (window.Telegram?.WebApp?.HapticFeedback) {
+        window.Telegram.WebApp.HapticFeedback.notificationOccurred("success");
+      }
+
+      const items = Array.isArray(data.items) ? data.items : [];
+      let stockBlockHtml = "";
+
+      if (items.length === 0) {
+        stockBlockHtml = `
+          <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #3a3a3c; font-size: 14px; color: #ff453a; font-weight: 600;">
+            🔴 Нет в наличии в каталоге склада
+          </div>
+        `;
+      } else if (items.length === 1) {
+        const it = items[0];
+        const inStock = it.stock > 0;
+        const stockColor = inStock ? "#30d158" : "#ff453a";
+        const stockLabel = inStock ? `В наличии: ${it.stock} шт.` : "Нет в наличии (0 шт.)";
+        const commentHtml = it.comment
+          ? `<div style="font-size: 12px; color: #d1d1d6; margin-top: 4px;">💬 ${it.comment}</div>`
+          : "";
+
+        stockBlockHtml = `
+          <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #3a3a3c;">
+            <div style="font-size: 16px; font-weight: 800; color: #ffd60a;">
+              💰 ${it.price} ₽ <span style="color: ${stockColor}; font-size: 14px; font-weight: 700;">• ${stockLabel}</span>
+            </div>
+            ${commentHtml}
+          </div>
+        `;
+      } else {
+        const rowsHtml = items.map(it => {
+          const inStock = it.stock > 0;
+          const stockColor = inStock ? "#30d158" : "#ff453a";
+          const stockLabel = inStock ? `${it.stock} шт.` : "0 шт.";
+          const commentBadge = it.comment ? ` • 💬 ${it.comment}` : "";
+          return `
+            <div style="background: #3a3a3c; padding: 8px 10px; border-radius: 8px; margin-top: 6px; font-size: 13px;">
+              <span style="font-weight: 800; color: #ffd60a;">💰 ${it.price} ₽</span>
+              <span style="color: ${stockColor}; font-weight: 700;"> • 📦 ${stockLabel}</span>
+              <span style="color: #d1d1d6; font-size: 12px;">${commentBadge}</span>
+            </div>
+          `;
+        }).join("");
+
+        stockBlockHtml = `
+          <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #3a3a3c;">
+            <div style="font-size: 12px; color: #8e8e93;">Найдено позиций: ${items.length}</div>
+            ${rowsHtml}
+          </div>
+        `;
+      }
+
+      resultCard.innerHTML = `
+        <div class="part-num">🔢 ${data.part_number}</div>
+        <div class="part-name">🧩 ${data.part_name}</div>
+        <div class="part-color">🎨 Цвет: ${data.color_name}</div>
+        ${stockBlockHtml}
+      `;
+    }
+
     async function scanFrame() {
       if (isScanning || wasAutoPaused) return;
       const base64Image = captureCenterCrop();
       if (!base64Image) return;
 
       userId = resolveUserId();
-      if (!userId) {
+      if (!userId && !IS_CLIENT_MODE) {
         resultCard.innerHTML = `<div class="status-text" style="color:#ff453a;">Ошибка: Не получен ID Telegram. Откройте сканер через бота.</div>`;
         return;
       }
@@ -289,13 +359,16 @@
           body: JSON.stringify({
             action: "live_scan_add",
             image_base64: base64Image,
-            user_id: userId
+            user_id: userId || "guest",
+            mode: IS_CLIENT_MODE ? "client" : "admin"
           })
         });
 
         const data = await res.json();
 
-        if (data.success && data.mode === "choose") {
+        if (data.success && data.mode === "client_info") {
+          renderClientCard(data);
+        } else if (data.success && data.mode === "choose") {
           pauseAutoForChoice();
           if (window.Telegram?.WebApp?.HapticFeedback) {
             window.Telegram.WebApp.HapticFeedback.notificationOccurred("warning");
