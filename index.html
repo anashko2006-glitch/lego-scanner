@@ -116,10 +116,20 @@
             body: formData
           });
 
+          if (!res.ok) {
+            const errText = await res.text();
+            document.getElementById('part-title').innerText = `Ошибка сервера: ${res.status}`;
+            document.getElementById('part-details').innerText = errText.slice(0, 120);
+            updateStatus("Ошибка API", "red");
+            return;
+          }
+
           const data = await res.json();
           handleRecognitionResult(data);
         } catch (err) {
           console.error("Ошибка распознавания:", err);
+          document.getElementById('part-title').innerText = "Блокировка запроса (CORS / Сеть)";
+          document.getElementById('part-details').innerText = err.message;
           updateStatus("Ошибка сети", "red");
         } finally {
           isProcessing = false;
