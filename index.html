@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>Тест Live-сканера LEGO</title>
+  <title>Live-сканер склада LEGO</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -30,7 +30,6 @@
       height: 100%;
       object-fit: cover;
     }
-    /* Прицел по центру экрана */
     .reticle {
       position: absolute;
       width: 220px;
@@ -45,13 +44,14 @@
       top: 14px;
       left: 50%;
       transform: translateX(-50%);
-      background: rgba(255, 193, 7, 0.9);
+      background: rgba(48, 209, 88, 0.9);
       color: #000;
       font-weight: 700;
       font-size: 12px;
       padding: 4px 12px;
       border-radius: 20px;
       text-transform: uppercase;
+      white-space: nowrap;
     }
     .panel {
       background: #1c1c1e;
@@ -128,7 +128,7 @@
 <body>
 
   <div class="camera-box">
-    <span class="badge">Тестовый режим (без записи)</span>
+    <span class="badge">Боевой режим склада</span>
     <video id="video" autoplay playsinline muted></video>
     <div class="reticle"></div>
   </div>
@@ -147,7 +147,6 @@
   <canvas id="canvas" style="display:none;"></canvas>
 
   <script>
-    // ⚠️ ВСТАВЬ СЮДА URL ТВОЕЙ EDGE FUNCTION В SUPABASE
     const EDGE_FUNCTION_URL = "https://zpjmccnrfarkmmzvzbfj.supabase.co/functions/v1/telegram-bot";
 
     if (window.Telegram && window.Telegram.WebApp) {
@@ -164,11 +163,8 @@
     let isScanning = false;
     let autoTimer = null;
 
-    // Запуск задней камеры телефона
-    // Запуск задней камеры телефона с надёжным откатом
     async function startCamera() {
       try {
-        // Сначала пробуем основную тыловую камеру (используем ideal, чтобы не падало на разных Android)
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { 
             facingMode: { ideal: "environment" }, 
@@ -180,7 +176,6 @@
         video.srcObject = stream;
         await video.play();
       } catch (err) {
-        // Если возникла ошибка — включаем любую доступную камеру по умолчанию
         try {
           const fallbackStream = await navigator.mediaDevices.getUserMedia({ 
             video: true, 
@@ -194,7 +189,6 @@
       }
     }
 
-    // Вырезаем квадрат по центру прицела и сжимаем для быстрой отправки
     function captureCenterCrop() {
       const vw = video.videoWidth;
       const vh = video.videoHeight;
@@ -212,10 +206,55 @@
       return canvas.toDataURL("image/jpeg", 0.82);
     }
 
+    const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
+    const userId = tgUser ? tgUser.id : null;
+    let wasAutoPaused = false;
+
+    function pauseAutoForChoice() {
+      if (autoTimer) {
+        clearInterval(autoTimer);
+        autoTimer = null;
+        wasAutoPaused = true;
+        autoBtn.classList.remove("active");
+        autoBtn.textContent = "⏸ Пауза (выбор)";
+      }
+    }
+
+    function resumeAutoIfNeeded() {
+      if (wasAutoPaused) {
+        wasAutoPaused = false;
+        autoBtn.classList.add("active");
+        autoBtn.textContent = "🟢 Авто: ВКЛ";
+        autoTimer = setInterval(scanFrame, 2500);
+      }
+    }
+
+    function renderAddedCard(data) {
+      if (window.Telegram?.WebApp?.HapticFeedback) {
+        window.Telegram.WebApp.HapticFeedback.notificationOccurred("success");
+      }
+      resultCard.innerHTML = `
+        <div class="part-num">🔢 ${data.part_number} <span style="color:#30d158;">(+1 шт)</span></div>
+        <div class="part-name">🧩 ${data.part_name}</div>
+        <div class="part-color">🎨 Цвет: ${data.color_name}</div>
+        <div class="part-stock" style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #3a3a3c; font-size: 15px; color: #30d158; font-weight: 700;">
+          📦 ${data.location}: ${data.new_stock} шт (${data.price} ₽)
+        </div>
+        <button onclick="undoScan(this, ${data.row_num})" style="margin-top: 10px; width: 100%; background: #ff453a; color: white; padding: 10px; border-radius: 8px; font-size: 14px; font-weight: 700; border: none;">
+          ❌ Ошибка (Отменить +1)
+        </button>
+      `;
+    }
+
     async function scanFrame() {
-      if (isScanning) return;
+      if (isScanning || wasAutoPaused) return;
       const base64Image = captureCenterCrop();
       if (!base64Image) return;
+
+      if (!userId) {
+        resultCard.innerHTML = `<div class="status-text" style="color:#ff453a;">Ошибка: Не получен ID Telegram. Откройте сканер через бота.</div>`;
+        return;
+      }
 
       isScanning = true;
       scanBtn.disabled = true;
@@ -226,28 +265,44 @@
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            action: "test_live_scan",
-            image_base64: base64Image
+            action: "live_scan_add",
+            image_base64: base64Image,
+            user_id: userId
           })
         });
 
         const data = await res.json();
 
-        if (data.success) {
-          const confText = data.confidence ? ` (${data.confidence}%)` : "";
-          // Выбираем цвет текста наличия: зелёный если есть, красный если нет
-          const stockColor = data.stock_info.includes('Нет') ? '#ff453a' : '#30d158';
-          
+        if (data.success && data.mode === "choose") {
+          pauseAutoForChoice();
+          if (window.Telegram?.WebApp?.HapticFeedback) {
+            window.Telegram.WebApp.HapticFeedback.notificationOccurred("warning");
+          }
+
+          const buttonsHtml = data.variants.map(v => {
+            const commentBadge = v.comment ? ` • 💬 ${v.comment}` : " • Без пометки";
+            return `
+              <button onclick="confirmVariant(${v.row_num})" style="width: 100%; text-align: left; background: #3a3a3c; color: #fff; padding: 10px 12px; border-radius: 8px; margin-top: 6px; font-size: 13px; border: 1px solid #545458;">
+                <div style="font-weight: 700; color: #ffd60a;">➕ ${v.price} ₽ (остаток: ${v.stock} шт.)</div>
+                <div style="color: #d1d1d6; font-size: 12px; margin-top: 2px;">Строка №${v.row_num}${commentBadge}</div>
+              </button>
+            `;
+          }).join("");
+
           resultCard.innerHTML = `
-            <div class="part-num">🔢 ${data.part_number}${confText}</div>
-            <div class="part-name">🧩 ${data.part_name}</div>
-            <div class="part-color">🎨 Цвет: ${data.color_name}</div>
-            <div class="part-stock" style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #3a3a3c; font-size: 15px; color: ${stockColor}; font-weight: 700;">
-              📦 ${data.stock_info}
+            <div style="background: rgba(255, 159, 10, 0.15); border: 1px solid #ff9f0a; border-radius: 10px; padding: 10px;">
+              <div style="font-weight: 800; color: #ff9f0a; font-size: 14px;">⚠️ Найдено несколько вариантов (${data.part_number})</div>
+              <div style="font-size: 12px; color: #e5e5ea; margin-top: 2px;">Выберите нужную строку для добавления +1 шт.:</div>
+              ${buttonsHtml}
+              <button onclick="cancelChoice()" style="width: 100%; background: transparent; color: #8e8e93; padding: 6px; margin-top: 6px; font-size: 12px; border: none;">
+                Пропустить деталь
+              </button>
             </div>
           `;
+        } else if (data.success && data.mode === "added") {
+          renderAddedCard(data);
         } else {
-          resultCard.innerHTML = `<div class="status-text">🤷‍♂️ ${data.error || "Не удалось распознать"}</div>`;
+          resultCard.innerHTML = `<div class="status-text" style="color:#ff453a;">🤷‍♂️ ${data.error || "Не удалось распознать"}</div>`;
         }
       } catch (err) {
         resultCard.innerHTML = `<div class="status-text" style="color:#ff453a;">Ошибка сети: ${err.message}</div>`;
@@ -258,9 +313,56 @@
       }
     }
 
-    scanBtn.addEventListener("click", scanFrame);
+    async function confirmVariant(rowNum) {
+      resultCard.innerHTML = `<div class="status-text">⏳ Записываю +1 шт. в строку №${rowNum}...</div>`;
+      try {
+        const res = await fetch(EDGE_FUNCTION_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "live_scan_confirm_row",
+            row_num: rowNum
+          })
+        });
+        const data = await res.json();
+        if (data.success) {
+          renderAddedCard(data);
+          resumeAutoIfNeeded();
+        } else {
+          resultCard.innerHTML = `<div class="status-text" style="color:#ff453a;">❌ ${data.error}</div>`;
+        }
+      } catch (err) {
+        resultCard.innerHTML = `<div class="status-text" style="color:#ff453a;">Ошибка сети: ${err.message}</div>`;
+      }
+    }
+
+    function cancelChoice() {
+      resultCard.innerHTML = `<div class="status-text">Деталь пропущена. Сканируйте дальше.</div>`;
+      resumeAutoIfNeeded();
+    }
+
+    async function undoScan(btn, rowNum) {
+      btn.disabled = true;
+      btn.textContent = "⏳ Отменяю...";
+      try {
+        await fetch(EDGE_FUNCTION_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "live_scan_undo", row_num: rowNum })
+        });
+        resultCard.innerHTML = `<div class="status-text" style="color:#ff9f0a;">↩️ Добавление отменено (-1 шт.).</div>`;
+      } catch (err) {
+        btn.textContent = "❌ Ошибка отмены";
+      }
+    }
+
+    scanBtn.addEventListener("click", () => {
+      wasAutoPaused = false;
+      scanFrame();
+    });
 
     autoBtn.addEventListener("click", () => {
+      wasAutoPaused = false;
       if (autoTimer) {
         clearInterval(autoTimer);
         autoTimer = null;
