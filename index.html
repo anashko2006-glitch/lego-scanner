@@ -235,10 +235,16 @@
 
         if (data.success) {
           const confText = data.confidence ? ` (${data.confidence}%)` : "";
+          // Выбираем цвет текста наличия: зелёный если есть, красный если нет
+          const stockColor = data.stock_info.includes('Нет') ? '#ff453a' : '#30d158';
+          
           resultCard.innerHTML = `
             <div class="part-num">🔢 ${data.part_number}${confText}</div>
             <div class="part-name">🧩 ${data.part_name}</div>
             <div class="part-color">🎨 Цвет: ${data.color_name}</div>
+            <div class="part-stock" style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #3a3a3c; font-size: 15px; color: ${stockColor}; font-weight: 700;">
+              📦 ${data.stock_info}
+            </div>
           `;
         } else {
           resultCard.innerHTML = `<div class="status-text">🤷‍♂️ ${data.error || "Не удалось распознать"}</div>`;
