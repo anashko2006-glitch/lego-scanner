@@ -470,6 +470,15 @@
         autoTimer = setInterval(scanFrame, 2500);
       }
     });
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden && autoTimer) {
+        clearInterval(autoTimer);
+        autoTimer = null;
+        wasAutoPaused = false;
+        autoBtn.classList.remove("active");
+        autoBtn.textContent = "🔄 Авто: ВЫКЛ";
+      }
+    });
 
     startCamera();
   </script>
