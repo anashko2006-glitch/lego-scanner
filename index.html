@@ -206,8 +206,29 @@
       return canvas.toDataURL("image/jpeg", 0.82);
     }
 
-    const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
-    const userId = tgUser ? tgUser.id : null;
+    function resolveUserId() {
+      const fromTg = window.Telegram?.WebApp?.initDataUnsafe?.user?.id;
+      const fromUrl = new URLSearchParams(window.location.search).get("uid");
+      const candidate = fromTg || fromUrl;
+
+      if (candidate && candidate !== "undefined" && candidate !== "null") {
+        try {
+          localStorage.setItem("lego_scanner_uid", String(candidate));
+        } catch (e) {}
+        return String(candidate);
+      }
+
+      try {
+        const saved = localStorage.getItem("lego_scanner_uid");
+        if (saved && saved !== "undefined" && saved !== "null") {
+          return saved;
+        }
+      } catch (e) {}
+
+      return null;
+    }
+
+    let userId = resolveUserId();
     let wasAutoPaused = false;
 
     function pauseAutoForChoice() {
@@ -251,6 +272,7 @@
       const base64Image = captureCenterCrop();
       if (!base64Image) return;
 
+      userId = resolveUserId();
       if (!userId) {
         resultCard.innerHTML = `<div class="status-text" style="color:#ff453a;">Ошибка: Не получен ID Telegram. Откройте сканер через бота.</div>`;
         return;
