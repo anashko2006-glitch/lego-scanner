@@ -129,7 +129,7 @@
 
   <div class="camera-box">
     <span class="badge">Тестовый режим (без записи)</span>
-    <video id="video" autoplay playsinline></video>
+    <video id="video" autoplay playsinline muted></video>
     <div class="reticle"></div>
   </div>
 
@@ -165,15 +165,32 @@
     let autoTimer = null;
 
     // Запуск задней камеры телефона
+    // Запуск задней камеры телефона с надёжным откатом
     async function startCamera() {
       try {
+        // Сначала пробуем основную тыловую камеру (используем ideal, чтобы не падало на разных Android)
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } },
+          video: { 
+            facingMode: { ideal: "environment" }, 
+            width: { ideal: 1280 }, 
+            height: { ideal: 720 } 
+          },
           audio: false
         });
         video.srcObject = stream;
+        await video.play();
       } catch (err) {
-        resultCard.innerHTML = `<div class="status-text" style="color:#ff453a;">Ошибка доступа к камере: ${err.message}</div>`;
+        // Если возникла ошибка — включаем любую доступную камеру по умолчанию
+        try {
+          const fallbackStream = await navigator.mediaDevices.getUserMedia({ 
+            video: true, 
+            audio: false 
+          });
+          video.srcObject = fallbackStream;
+          await video.play();
+        } catch (e) {
+          resultCard.innerHTML = `<div class="status-text" style="color:#ff453a;">Ошибка доступа к камере: ${e.message}</div>`;
+        }
       }
     }
 
