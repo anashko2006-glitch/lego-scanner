@@ -603,7 +603,7 @@
               <div class="part-color" style="font-size: 13px;">🎨 ${data.color_name}</div>
               ${refPriceHtml}
               <button onclick="createNewPartFromScan('${safeNum}', '${safeName}', '${safeColor}')" style="width: 100%; background: #30d158; color: #000; padding: 10px 12px; border-radius: 8px; margin-top: 8px; font-size: 14px; font-weight: 800; border: none;">
-                ➕ Создать на складе (0 ₽, +1 шт.)
+                ➕ Создать на складе (${data.ref_price_rub || 0} ₽, +1 шт.)
               </button>
               <button onclick="cancelChoice()" style="width: 100%; background: transparent; color: #8e8e93; padding: 6px; margin-top: 4px; font-size: 12px; border: none;">
                 Пропустить деталь
