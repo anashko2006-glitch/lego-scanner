@@ -578,6 +578,38 @@
               </button>
             </div>
           `;
+          } else if (data.success && data.mode === "not_found") {
+          needChoicePause = true;
+          lastFrameSignature = currentSig;
+          requireSceneChange = true;
+          pauseAutoForChoice();
+          if (window.Telegram?.WebApp?.HapticFeedback) {
+            window.Telegram.WebApp.HapticFeedback.notificationOccurred("warning");
+          }
+
+          const refPriceHtml = data.ref_price_rub > 0
+            ? `<div style="font-size: 13px; color: #ffd60a; margin-top: 4px;">💵 Ориентир BL (Used): <b>~${data.ref_price_rub} ₽</b></div>`
+            : `<div style="font-size: 12px; color: #8e8e93; margin-top: 4px;">💵 Ориентир BL: нет данных</div>`;
+
+          const safeNum = encodeURIComponent(data.part_number);
+          const safeName = encodeURIComponent(data.part_name);
+          const safeColor = encodeURIComponent(data.color_name);
+
+          resultCard.innerHTML = `
+            <div style="background: rgba(10, 132, 255, 0.14); border: 1px solid #0a84ff; border-radius: 10px; padding: 10px;">
+              <div style="font-weight: 800; color: #64d2ff; font-size: 14px;">🆕 Нет на складе «${data.location}»</div>
+              <div class="part-num" style="font-size: 17px; margin-top: 4px;">🔢 ${data.part_number}</div>
+              <div class="part-name" style="font-size: 13px;">🧩 ${data.part_name}</div>
+              <div class="part-color" style="font-size: 13px;">🎨 ${data.color_name}</div>
+              ${refPriceHtml}
+              <button onclick="createNewPartFromScan('${safeNum}', '${safeName}', '${safeColor}')" style="width: 100%; background: #30d158; color: #000; padding: 10px 12px; border-radius: 8px; margin-top: 8px; font-size: 14px; font-weight: 800; border: none;">
+                ➕ Создать на складе (0 ₽, +1 шт.)
+              </button>
+              <button onclick="cancelChoice()" style="width: 100%; background: transparent; color: #8e8e93; padding: 6px; margin-top: 4px; font-size: 12px; border: none;">
+                Пропустить деталь
+              </button>
+            </div>
+          `;
         } else if (data.success && data.mode === "added") {
           renderAddedCard(data);
           lastFrameSignature = currentSig;
@@ -618,6 +650,36 @@
           resumeAutoIfNeeded();
         } else {
           resultCard.innerHTML = `<div class="status-text" style="color:#ff453a;">❌ ${data.error}</div>`;
+        }
+      } catch (err) {
+        resultCard.innerHTML = `<div class="status-text" style="color:#ff453a;">Ошибка сети: ${err.message}</div>`;
+      }
+    }
+    async function createNewPartFromScan(encodedNum, encodedName, encodedColor) {
+      const partNumber = decodeURIComponent(encodedNum);
+      const partName = decodeURIComponent(encodedName);
+      const colorName = decodeURIComponent(encodedColor);
+
+      resultCard.innerHTML = `<div class="status-text">⏳ Создаю строку для ${partNumber}...</div>`;
+      try {
+        const res = await fetch(EDGE_FUNCTION_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "live_scan_create_new",
+            user_id: userId,
+            part_number: partNumber,
+            part_name: partName,
+            color_name: colorName
+          })
+        });
+        const data = await res.json();
+        if (data.success) {
+          renderAddedCard(data);
+          requireSceneChange = true;
+          resumeAutoIfNeeded();
+        } else {
+          resultCard.innerHTML = `<div class="status-text" style="color:#ff453a;">❌ ${data.error || "Ошибка создания"}</div>`;
         }
       } catch (err) {
         resultCard.innerHTML = `<div class="status-text" style="color:#ff453a;">Ошибка сети: ${err.message}</div>`;
