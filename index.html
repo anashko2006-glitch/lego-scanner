@@ -38,6 +38,10 @@
       border-radius: 16px;
       box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.45);
       pointer-events: none;
+      transition: border-color 0.2s ease;
+    }
+    .reticle.waiting-swap {
+      border-color: rgba(142, 142, 147, 0.85);
     }
     .badge {
       position: absolute;
@@ -52,6 +56,21 @@
       border-radius: 20px;
       text-transform: uppercase;
       white-space: nowrap;
+    }
+    .hybrid-progress-wrap {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      width: 100%;
+      height: 4px;
+      background: rgba(255, 255, 255, 0.15);
+      display: none;
+    }
+    .hybrid-progress-bar {
+      height: 100%;
+      width: 0%;
+      background: #30d158;
+      transition: width 0.1s linear;
     }
     .panel {
       background: #1c1c1e;
@@ -116,11 +135,15 @@
     #autoBtn {
       background: #2c2c2e;
       color: #fff;
-      flex: 0.7;
+      flex: 0.85;
       font-size: 14px;
     }
     #autoBtn.active {
       background: #30d158;
+      color: #000;
+    }
+    #autoBtn.waiting {
+      background: #ffd60a;
       color: #000;
     }
   </style>
@@ -128,27 +151,32 @@
 <body>
 
   <div class="camera-box">
-    <span class="badge" id="modeBadge">Боевой режим склада</span>
+    <span class="badge" id="modeBadge">Гибридный режим склада</span>
     <video id="video" autoplay playsinline muted></video>
-    <div class="reticle"></div>
+    <div class="reticle" id="reticle"></div>
+    <div class="hybrid-progress-wrap" id="progressWrap">
+      <div class="hybrid-progress-bar" id="progressBar"></div>
+    </div>
   </div>
 
   <div class="panel">
     <div class="result-card" id="resultCard">
-      <div class="status-text">Наведите прицел на деталь и нажмите «Распознать»</div>
+      <div class="status-text">Наведите прицел на деталь и нажмите «Распознать» или включите «Гибрид»</div>
     </div>
 
     <div class="controls">
       <button id="scanBtn">📷 Распознать</button>
-      <button id="autoBtn">🔄 Авто: ВЫКЛ</button>
+      <button id="autoBtn">🔄 Гибрид: ВЫКЛ</button>
     </div>
   </div>
 
   <canvas id="canvas" style="display:none;"></canvas>
+  <canvas id="diffCanvas" width="32" height="32" style="display:none;"></canvas>
 
   <script>
     const EDGE_FUNCTION_URL = "https://zpjmccnrfarkmmzvzbfj.supabase.co/functions/v1/telegram-bot";
     const IS_CLIENT_MODE = new URLSearchParams(window.location.search).get("mode") === "client";
+    const HYBRID_DELAY_MS = 3500; // Задержка 3,5 секунды в гибридном режиме
 
     const modeBadge = document.getElementById("modeBadge");
     if (IS_CLIENT_MODE && modeBadge) {
@@ -164,12 +192,24 @@
 
     const video = document.getElementById("video");
     const canvas = document.getElementById("canvas");
+    const diffCanvas = document.getElementById("diffCanvas");
+    const reticle = document.getElementById("reticle");
     const resultCard = document.getElementById("resultCard");
     const scanBtn = document.getElementById("scanBtn");
     const autoBtn = document.getElementById("autoBtn");
+    const progressWrap = document.getElementById("progressWrap");
+    const progressBar = document.getElementById("progressBar");
 
     let isScanning = false;
-    let autoTimer = null;
+    let isHybridActive = false;
+    let wasAutoPaused = false;
+    let hybridTimeout = null;
+    let countdownInterval = null;
+    let swapPollInterval = null;
+
+    // Защита от повторного сканирования той же неподвижной детали
+    let requireSceneChange = false;
+    let lastFrameSignature = null;
 
     async function startCamera() {
       try {
@@ -214,6 +254,35 @@
       return canvas.toDataURL("image/jpeg", 0.82);
     }
 
+    // Снимаем компактный слепок центра кадра (32x32) для определения смены детали
+    function getFrameSignature() {
+      const vw = video.videoWidth;
+      const vh = video.videoHeight;
+      if (!vw || !vh) return null;
+
+      const cropSize = Math.min(vw, vh) * 0.65;
+      const sx = (vw - cropSize) / 2;
+      const sy = (vh - cropSize) / 2;
+
+      const dCtx = diffCanvas.getContext("2d", { willReadFrequently: true });
+      dCtx.drawImage(video, sx, sy, cropSize, cropSize, 0, 0, 32, 32);
+      return dCtx.getImageData(0, 0, 32, 32).data;
+    }
+
+    // Вычисляем среднюю разницу яркости пикселей между двумя кадрами (0..255)
+    function computeFrameDiff(sigA, sigB) {
+      if (!sigA || !sigB || sigA.length !== sigB.length) return 255;
+      let totalDiff = 0;
+      const pixels = sigA.length / 4;
+      for (let i = 0; i < sigA.length; i += 4) {
+        const dR = Math.abs(sigA[i] - sigB[i]);
+        const dG = Math.abs(sigA[i + 1] - sigB[i + 1]);
+        const dB = Math.abs(sigA[i + 2] - sigB[i + 2]);
+        totalDiff += (dR + dG + dB) / 3;
+      }
+      return totalDiff / pixels;
+    }
+
     function resolveUserId() {
       const fromTg = window.Telegram?.WebApp?.initDataUnsafe?.user?.id;
       const fromUrl = new URLSearchParams(window.location.search).get("uid");
@@ -237,14 +306,118 @@
     }
 
     let userId = resolveUserId();
-    let wasAutoPaused = false;
+
+    function clearHybridTimers() {
+      if (hybridTimeout) {
+        clearTimeout(hybridTimeout);
+        hybridTimeout = null;
+      }
+      if (countdownInterval) {
+        clearInterval(countdownInterval);
+        countdownInterval = null;
+      }
+      if (swapPollInterval) {
+        clearInterval(swapPollInterval);
+        swapPollInterval = null;
+      }
+      progressWrap.style.display = "none";
+      progressBar.style.width = "0%";
+      reticle.classList.remove("waiting-swap");
+    }
+
+    function stopHybridMode() {
+      isHybridActive = false;
+      wasAutoPaused = false;
+      clearHybridTimers();
+      autoBtn.classList.remove("active", "waiting");
+      autoBtn.textContent = "🔄 Гибрид: ВЫКЛ";
+    }
+
+    function scheduleNextHybridCycle(delayMs = HYBRID_DELAY_MS) {
+      clearHybridTimers();
+      if (!isHybridActive || wasAutoPaused) return;
+
+      const startTime = Date.now();
+      progressWrap.style.display = "block";
+      progressBar.style.width = "100%";
+
+      autoBtn.classList.remove("waiting");
+      autoBtn.classList.add("active");
+      autoBtn.textContent = `🟢 Гибрид: ${(delayMs / 1000).toFixed(1)}с`;
+
+      countdownInterval = setInterval(() => {
+        const elapsed = Date.now() - startTime;
+        const remaining = Math.max(0, delayMs - elapsed);
+        const pct = (remaining / delayMs) * 100;
+        progressBar.style.width = `${pct}%`;
+        autoBtn.textContent = `🟢 Гибрид: ${(remaining / 1000).toFixed(1)}с`;
+      }, 100);
+
+      hybridTimeout = setTimeout(() => {
+        clearHybridTimers();
+        if (!isHybridActive || wasAutoPaused) return;
+
+        // Если после прошлого +1 деталь ещё не убрали из прицела — ждём смены детали
+        if (requireSceneChange && lastFrameSignature) {
+          waitForPartSwap();
+        } else {
+          scanFrame(false);
+        }
+      }, delayMs);
+    }
+
+    function waitForPartSwap() {
+      clearHybridTimers();
+      if (!isHybridActive || wasAutoPaused) return;
+
+      autoBtn.classList.remove("active");
+      autoBtn.classList.add("waiting");
+      autoBtn.textContent = "⏳ Смените деталь";
+      reticle.classList.add("waiting-swap");
+
+      let stableFramesAfterMove = 0;
+      let prevCheckSig = getFrameSignature();
+      let sceneChanged = false;
+
+      swapPollInterval = setInterval(() => {
+        if (!isHybridActive || wasAutoPaused || isScanning) return;
+
+        const currentSig = getFrameSignature();
+        if (!currentSig) return;
+
+        // 1. Проверяем, сдвинули ли старую деталь (порог отличия > 14)
+        if (!sceneChanged) {
+          const diffFromLastScan = computeFrameDiff(lastFrameSignature, currentSig);
+          if (diffFromLastScan > 14) {
+            sceneChanged = true;
+            autoBtn.textContent = "✋ Фиксирую...";
+          }
+          prevCheckSig = currentSig;
+          return;
+        }
+
+        // 2. После смены ждём 2 спокойных замера (~0.5 сек), чтобы рука ушла из кадра
+        const motionDiff = computeFrameDiff(prevCheckSig, currentSig);
+        prevCheckSig = currentSig;
+
+        if (motionDiff < 8) {
+          stableFramesAfterMove++;
+          if (stableFramesAfterMove >= 2) {
+            clearHybridTimers();
+            requireSceneChange = false;
+            scanFrame(false);
+          }
+        } else {
+          stableFramesAfterMove = 0;
+        }
+      }, 250);
+    }
 
     function pauseAutoForChoice() {
-      if (autoTimer) {
-        clearInterval(autoTimer);
-        autoTimer = null;
+      if (isHybridActive) {
+        clearHybridTimers();
         wasAutoPaused = true;
-        autoBtn.classList.remove("active");
+        autoBtn.classList.remove("active", "waiting");
         autoBtn.textContent = "⏸ Пауза (выбор)";
       }
     }
@@ -252,9 +425,8 @@
     function resumeAutoIfNeeded() {
       if (wasAutoPaused) {
         wasAutoPaused = false;
-        autoBtn.classList.add("active");
-        autoBtn.textContent = "🟢 Авто: ВКЛ";
-        autoTimer = setInterval(scanFrame, 2500);
+        isHybridActive = true;
+        scheduleNextHybridCycle(HYBRID_DELAY_MS);
       }
     }
 
@@ -337,10 +509,14 @@
       `;
     }
 
-    async function scanFrame() {
-      if (isScanning || wasAutoPaused) return;
+    async function scanFrame(isManual = false) {
+      if (isScanning) return;
+      if (!isManual && wasAutoPaused) return;
+
       const base64Image = captureCenterCrop();
       if (!base64Image) return;
+
+      const currentSig = getFrameSignature();
 
       userId = resolveUserId();
       if (!userId && !IS_CLIENT_MODE) {
@@ -348,9 +524,12 @@
         return;
       }
 
+      clearHybridTimers();
       isScanning = true;
       scanBtn.disabled = true;
       scanBtn.textContent = "⏳ Распознаю...";
+
+      let needChoicePause = false;
 
       try {
         const res = await fetch(EDGE_FUNCTION_URL, {
@@ -368,7 +547,12 @@
 
         if (data.success && data.mode === "client_info") {
           renderClientCard(data);
+          lastFrameSignature = currentSig;
+          requireSceneChange = true;
         } else if (data.success && data.mode === "choose") {
+          needChoicePause = true;
+          lastFrameSignature = currentSig;
+          requireSceneChange = true;
           pauseAutoForChoice();
           if (window.Telegram?.WebApp?.HapticFeedback) {
             window.Telegram.WebApp.HapticFeedback.notificationOccurred("warning");
@@ -396,15 +580,23 @@
           `;
         } else if (data.success && data.mode === "added") {
           renderAddedCard(data);
+          lastFrameSignature = currentSig;
+          requireSceneChange = true;
         } else {
           resultCard.innerHTML = `<div class="status-text" style="color:#ff453a;">🤷‍♂️ ${data.error || "Не удалось распознать"}</div>`;
+          requireSceneChange = false;
         }
       } catch (err) {
         resultCard.innerHTML = `<div class="status-text" style="color:#ff453a;">Ошибка сети: ${err.message}</div>`;
+        requireSceneChange = false;
       } finally {
         isScanning = false;
         scanBtn.disabled = false;
         scanBtn.textContent = "📷 Распознать";
+
+        if (isHybridActive && !needChoicePause && !wasAutoPaused) {
+          scheduleNextHybridCycle(HYBRID_DELAY_MS);
+        }
       }
     }
 
@@ -422,6 +614,7 @@
         const data = await res.json();
         if (data.success) {
           renderAddedCard(data);
+          requireSceneChange = true;
           resumeAutoIfNeeded();
         } else {
           resultCard.innerHTML = `<div class="status-text" style="color:#ff453a;">❌ ${data.error}</div>`;
@@ -433,12 +626,17 @@
 
     function cancelChoice() {
       resultCard.innerHTML = `<div class="status-text">Деталь пропущена. Сканируйте дальше.</div>`;
+      requireSceneChange = true;
       resumeAutoIfNeeded();
     }
 
     async function undoScan(btn, rowNum) {
       btn.disabled = true;
       btn.textContent = "⏳ Отменяю...";
+      requireSceneChange = true;
+      if (isHybridActive) {
+        scheduleNextHybridCycle(HYBRID_DELAY_MS);
+      }
       try {
         await fetch(EDGE_FUNCTION_URL, {
           method: "POST",
@@ -451,32 +649,28 @@
       }
     }
 
+    // Ручной спуск работает мгновенно даже при включённом гибридном режиме
     scanBtn.addEventListener("click", () => {
       wasAutoPaused = false;
-      scanFrame();
+      requireSceneChange = false;
+      scanFrame(true);
     });
 
+    // Переключение гибридного режима
     autoBtn.addEventListener("click", () => {
-      wasAutoPaused = false;
-      if (autoTimer) {
-        clearInterval(autoTimer);
-        autoTimer = null;
-        autoBtn.classList.remove("active");
-        autoBtn.textContent = "🔄 Авто: ВЫКЛ";
+      if (isHybridActive || wasAutoPaused) {
+        stopHybridMode();
       } else {
-        autoBtn.classList.add("active");
-        autoBtn.textContent = "🟢 Авто: ВКЛ";
-        scanFrame();
-        autoTimer = setInterval(scanFrame, 2500);
+        isHybridActive = true;
+        wasAutoPaused = false;
+        requireSceneChange = false;
+        scanFrame(false);
       }
     });
+
     document.addEventListener("visibilitychange", () => {
-      if (document.hidden && autoTimer) {
-        clearInterval(autoTimer);
-        autoTimer = null;
-        wasAutoPaused = false;
-        autoBtn.classList.remove("active");
-        autoBtn.textContent = "🔄 Авто: ВЫКЛ";
+      if (document.hidden && (isHybridActive || wasAutoPaused)) {
+        stopHybridMode();
       }
     });
 
