@@ -558,21 +558,35 @@
             window.Telegram.WebApp.HapticFeedback.notificationOccurred("warning");
           }
 
-          const buttonsHtml = data.variants.map(v => {
+          const buttonsHtml = (data.variants || []).map(v => {
+            const colorBadge = v.color ? ` • 🎨 ${v.color}` : "";
             const commentBadge = v.comment ? ` • 💬 ${v.comment}` : " • Без пометки";
             return `
               <button onclick="confirmVariant(${v.row_num})" style="width: 100%; text-align: left; background: #3a3a3c; color: #fff; padding: 10px 12px; border-radius: 8px; margin-top: 6px; font-size: 13px; border: 1px solid #545458;">
-                <div style="font-weight: 700; color: #ffd60a;">➕ ${v.price} ₽ (остаток: ${v.stock} шт.)</div>
+                <div style="font-weight: 700; color: #ffd60a;">➕ ${v.price} ₽ (остаток: ${v.stock} шт.)${colorBadge}</div>
                 <div style="color: #d1d1d6; font-size: 12px; margin-top: 2px;">Строка №${v.row_num}${commentBadge}</div>
+              </button>
+            `;
+          }).join("");
+
+          const safeNum = encodeURIComponent(data.part_number).replace(/'/g, "%27");
+          const safeName = encodeURIComponent(data.part_name || `Деталь ${data.part_number}`).replace(/'/g, "%27");
+
+          const createButtonsHtml = (data.create_options || []).map(optColor => {
+            const safeOptColor = encodeURIComponent(optColor).replace(/'/g, "%27");
+            return `
+              <button onclick="createNewPartFromScan('${safeNum}', '${safeName}', '${safeOptColor}')" style="width: 100%; text-align: left; background: rgba(48, 209, 88, 0.18); color: #30d158; padding: 10px 12px; border-radius: 8px; margin-top: 6px; font-size: 13px; font-weight: 700; border: 1px solid #30d158;">
+                🆕 Создать на складе: ${optColor} (+1 шт.)
               </button>
             `;
           }).join("");
 
           resultCard.innerHTML = `
             <div style="background: rgba(255, 159, 10, 0.15); border: 1px solid #ff9f0a; border-radius: 10px; padding: 10px;">
-              <div style="font-weight: 800; color: #ff9f0a; font-size: 14px;">⚠️ Найдено несколько вариантов (${data.part_number})</div>
-              <div style="font-size: 12px; color: #e5e5ea; margin-top: 2px;">Выберите нужную строку для добавления +1 шт.:</div>
+              <div style="font-weight: 800; color: #ff9f0a; font-size: 14px;">⚠️ Уточните вариант (${data.part_number})</div>
+              <div style="font-size: 12px; color: #e5e5ea; margin-top: 2px;">Выберите строку для +1 шт. или создайте новую:</div>
               ${buttonsHtml}
+              ${createButtonsHtml}
               <button onclick="cancelChoice()" style="width: 100%; background: transparent; color: #8e8e93; padding: 6px; margin-top: 6px; font-size: 12px; border: none;">
                 Пропустить деталь
               </button>
