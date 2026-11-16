@@ -434,12 +434,19 @@
       if (window.Telegram?.WebApp?.HapticFeedback) {
         window.Telegram.WebApp.HapticFeedback.notificationOccurred("success");
       }
+
+      const locName = data.location || "Склад";
+      const hasOldStock = typeof data.old_stock === "number" && !Number.isNaN(data.old_stock);
+      const stockChangeText = hasOldStock
+        ? `${data.old_stock} шт. → <b>${data.new_stock} шт.</b>`
+        : `<b>${data.new_stock} шт.</b>`;
+
       resultCard.innerHTML = `
         <div class="part-num">🔢 ${data.part_number} <span style="color:#30d158;">(+1 шт)</span></div>
         <div class="part-name">🧩 ${data.part_name}</div>
         <div class="part-color">🎨 Цвет: ${data.color_name}</div>
-        <div class="part-stock" style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #3a3a3c; font-size: 15px; color: #30d158; font-weight: 700;">
-          📦 ${data.location}: ${data.new_stock} шт (${data.price} ₽)
+        <div class="part-stock" style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #3a3a3c; font-size: 15px; color: #30d158; font-weight: 600;">
+          📦 ${locName}: ${stockChangeText} (${data.price} ₽)
         </div>
         <button onclick="undoScan(this, ${data.row_num})" style="margin-top: 10px; width: 100%; background: #ff453a; color: white; padding: 10px; border-radius: 8px; font-size: 14px; font-weight: 700; border: none;">
           ❌ Ошибка (Отменить +1)
