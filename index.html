@@ -553,7 +553,10 @@
         });
 
         const data = await res.json();
-
+        if (data.success) {
+          lastAlternatives = Array.isArray(data.alternatives) ? data.alternatives : [];
+          lastScoreInfo = data.score_info || null;
+        }
         needChoicePause = renderScanResponse(data, currentSig);
       } catch (err) {
         resultCard.innerHTML = `<div class="status-text" style="color:#ff453a;">Ошибка сети: ${err.message}</div>`;
@@ -573,6 +576,7 @@
     // ===== Обработка ответа сканера (общая для обычного скана и выбора варианта) =====
     let lastCandidates = [];
     let lastScoreInfo = null;
+    let lastAlternatives = []; // запасные варианты Brickognize для текущей детали
 
     function pct(v) {
       return (v === null || v === undefined || Number.isNaN(Number(v))) ? "—" : Math.round(Number(v) * 100) + "%";
@@ -589,7 +593,7 @@
       return `<div style="font-size: 11px; color: #8e8e93; margin-bottom: 4px;">${top}${sec}${gap}${fam}${tag}</div>`;
     }
 
-    function renderPickCandidates(data) {
+    function renderPickCandidates(data, title = "🤔 Уточните деталь", subtitle = "Нейросеть сомневается между вариантами:") {
       lastCandidates = Array.isArray(data.candidates) ? data.candidates : [];
       lastScoreInfo = data.score_info || null;
 
@@ -615,13 +619,30 @@
       resultCard.innerHTML = `
         <div style="background: rgba(255, 159, 10, 0.15); border: 1px solid #ff9f0a; border-radius: 10px; padding: 10px;">
           ${scoreBadgeHtml(lastScoreInfo)}
-          <div style="font-weight: 800; color: #ff9f0a; font-size: 14px;">🤔 Уточните деталь</div>
-          <div style="font-size: 12px; color: #e5e5ea; margin-top: 2px;">Нейросеть сомневается между вариантами:</div>
+          <div style="font-weight: 800; color: #ff9f0a; font-size: 14px;">${title}</div>
+          <div style="font-size: 12px; color: #e5e5ea; margin-top: 2px;">${subtitle}</div>
           ${itemsHtml}
           <button onclick="cancelChoice()" style="width: 100%; background: transparent; color: #8e8e93; padding: 6px; margin-top: 6px; font-size: 12px; border: none;">
             Пропустить деталь
           </button>
         </div>
+      `;
+    }
+
+    function showAlternatives(title, subtitle) {
+      pauseAutoForChoice();
+      renderPickCandidates(
+        { candidates: lastAlternatives, score_info: lastScoreInfo },
+        title || "🔄 Другие варианты",
+        subtitle || "Выберите подходящую деталь:"
+      );
+    }
+
+    function altButtonHtml() {
+      return `
+        <button onclick="showAlternatives()" style="width: 100%; background: #3a3a3c; color: #64d2ff; padding: 9px 12px; border-radius: 8px; margin-top: 8px; font-size: 13px; font-weight: 700; border: 1px solid #545458;">
+          🔄 Другие варианты (${lastAlternatives.length})
+        </button>
       `;
     }
 
@@ -735,6 +756,10 @@
       if (data.score_info && data.success) {
         resultCard.insertAdjacentHTML("afterbegin", scoreBadgeHtml(data.score_info));
       }
+      // «Нет на складе», «Уточните строку», клиентская карточка — кнопка «Другие варианты»
+      if (data.success && ["not_found", "choose", "client_info"].includes(data.mode) && lastAlternatives.length > 0) {
+        resultCard.insertAdjacentHTML("beforeend", altButtonHtml());
+      }
       return pause;
     }
 
@@ -742,6 +767,7 @@
     async function pickCandidate(index) {
       const c = lastCandidates[index];
       if (!c) return;
+      lastAlternatives = lastAlternatives.filter((a) => a.part_number !== c.part_number);
       resultCard.innerHTML = `<div class="status-text">⏳ ${c.part_number}: проверяю склад...</div>`;
       try {
         const res = await fetch(EDGE_FUNCTION_URL, {
@@ -833,7 +859,10 @@
       btn.disabled = true;
       btn.textContent = "⏳ Отменяю...";
       requireSceneChange = true;
-      if (isHybridActive) {
+      const hasAlternatives = lastAlternatives.length > 0;
+      if (hasAlternatives) {
+        pauseAutoForChoice(); // ждём, пока выберете другой вариант или пропустите
+      } else if (isHybridActive) {
         scheduleNextHybridCycle(HYBRID_DELAY_MS);
       }
       try {
@@ -842,7 +871,11 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ action: "live_scan_undo", row_num: rowNum })
         });
-        resultCard.innerHTML = `<div class="status-text" style="color:#ff9f0a;">↩️ Добавление отменено (-1 шт.).</div>`;
+        if (hasAlternatives) {
+          showAlternatives("↩️ Отменено (-1 шт.)", "Может, это одна из этих деталей?");
+        } else {
+          resultCard.innerHTML = `<div class="status-text" style="color:#ff9f0a;">↩️ Добавление отменено (-1 шт.).</div>`;
+        }
       } catch (err) {
         btn.textContent = "❌ Ошибка отмены";
       }
