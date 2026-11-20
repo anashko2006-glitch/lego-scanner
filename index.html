@@ -554,12 +554,99 @@
 
         const data = await res.json();
 
+        needChoicePause = renderScanResponse(data, currentSig);
+      } catch (err) {
+        resultCard.innerHTML = `<div class="status-text" style="color:#ff453a;">Ошибка сети: ${err.message}</div>`;
+        requireSceneChange = false;
+      } finally {
+        isScanning = false;
+        scanBtn.disabled = false;
+        scanBtn.textContent = "📷 Распознать";
+
+        if (isHybridActive && !needChoicePause && !wasAutoPaused) {
+          scheduleNextHybridCycle(HYBRID_DELAY_MS);
+        }
+      }
+    }
+
+
+    // ===== Обработка ответа сканера (общая для обычного скана и выбора варианта) =====
+    let lastCandidates = [];
+    let lastScoreInfo = null;
+
+    function pct(v) {
+      return (v === null || v === undefined || Number.isNaN(Number(v))) ? "—" : Math.round(Number(v) * 100) + "%";
+    }
+
+    // 🎯 Строка с процентами уверенности Brickognize
+    function scoreBadgeHtml(si) {
+      if (!si) return "";
+      const top = `🎯 ${si.top_number}: ${pct(si.top_score)}`;
+      const sec = si.second_number ? ` · 2-й: ${si.second_number} — ${pct(si.second_score)}` : "";
+      const gap = (si.gap !== null && si.gap !== undefined) ? ` · отрыв ${Math.round(si.gap * 100)}` : "";
+      const fam = si.family ? " · близнецы" : "";
+      const tag = si.chosen_by_user ? " · выбрано вручную" : (si.auto ? " · авто" : " · сомнение");
+      return `<div style="font-size: 11px; color: #8e8e93; margin-bottom: 4px;">${top}${sec}${gap}${fam}${tag}</div>`;
+    }
+
+    function renderPickCandidates(data) {
+      lastCandidates = Array.isArray(data.candidates) ? data.candidates : [];
+      lastScoreInfo = data.score_info || null;
+
+      const itemsHtml = lastCandidates.map((c, i) => {
+        const stockTxt = c.in_catalog
+          ? (c.stock > 0 ? `📦 есть: ${c.stock} шт.` : "📦 в каталоге, 0 шт.")
+          : "🆕 нет на складе";
+        const imgHtml = c.img_url
+          ? `<img src="${c.img_url}" style="width: 56px; height: 56px; object-fit: contain; background: #fff; border-radius: 6px; flex: none;" onerror="this.style.display='none'">`
+          : "";
+        return `
+          <button onclick="pickCandidate(${i})" style="display: flex; gap: 10px; align-items: center; width: 100%; text-align: left; background: #3a3a3c; color: #fff; padding: 8px 10px; border-radius: 8px; margin-top: 6px; font-size: 13px; border: 1px solid #545458;">
+            ${imgHtml}
+            <div style="flex: 1; min-width: 0;">
+              <div style="font-weight: 800; color: #ffd60a;">${c.part_number} <span style="color: #64d2ff;">${pct(c.score)}</span></div>
+              <div style="color: #f2f2f7; font-size: 12px; line-height: 1.25;">${c.part_name}</div>
+              <div style="color: #8e8e93; font-size: 12px; margin-top: 2px;">🎨 ${c.color_name} · ${stockTxt}</div>
+            </div>
+          </button>
+        `;
+      }).join("");
+
+      resultCard.innerHTML = `
+        <div style="background: rgba(255, 159, 10, 0.15); border: 1px solid #ff9f0a; border-radius: 10px; padding: 10px;">
+          ${scoreBadgeHtml(lastScoreInfo)}
+          <div style="font-weight: 800; color: #ff9f0a; font-size: 14px;">🤔 Уточните деталь</div>
+          <div style="font-size: 12px; color: #e5e5ea; margin-top: 2px;">Нейросеть сомневается между вариантами:</div>
+          ${itemsHtml}
+          <button onclick="cancelChoice()" style="width: 100%; background: transparent; color: #8e8e93; padding: 6px; margin-top: 6px; font-size: 12px; border: none;">
+            Пропустить деталь
+          </button>
+        </div>
+      `;
+    }
+
+    // Возвращает true, если автосканирование нужно поставить на паузу (ждём выбора)
+    function renderScanResponse(data, currentSig) {
+      let pause = false;
+
+      if (data.success && data.mode === "pick_candidate") {
+        pause = true;
+        lastFrameSignature = currentSig;
+        requireSceneChange = true;
+        pauseAutoForChoice();
+        if (window.Telegram?.WebApp?.HapticFeedback) {
+          window.Telegram.WebApp.HapticFeedback.notificationOccurred("warning");
+        }
+        renderPickCandidates(data);
+        return pause;
+      }
+
         if (data.success && data.mode === "client_info") {
           renderClientCard(data);
           lastFrameSignature = currentSig;
           requireSceneChange = true;
         } else if (data.success && data.mode === "choose") {
-          needChoicePause = true;
+          pause = true;
           lastFrameSignature = currentSig;
           requireSceneChange = true;
           pauseAutoForChoice();
@@ -603,7 +690,7 @@
             </div>
           `;
           } else if (data.success && data.mode === "not_found") {
-          needChoicePause = true;
+          pause = true;
           lastFrameSignature = currentSig;
           requireSceneChange = true;
           pauseAutoForChoice();
@@ -643,17 +730,41 @@
           resultCard.innerHTML = `<div class="status-text" style="color:#ff453a;">🤷‍♂️ ${data.error || "Не удалось распознать"}</div>`;
           requireSceneChange = false;
         }
+
+      // Проценты уверенности сверху любой карточки
+      if (data.score_info && data.success) {
+        resultCard.insertAdjacentHTML("afterbegin", scoreBadgeHtml(data.score_info));
+      }
+      return pause;
+    }
+
+    // Пользователь выбрал вариант в карточке «Уточните деталь»
+    async function pickCandidate(index) {
+      const c = lastCandidates[index];
+      if (!c) return;
+      resultCard.innerHTML = `<div class="status-text">⏳ ${c.part_number}: проверяю склад...</div>`;
+      try {
+        const res = await fetch(EDGE_FUNCTION_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "live_scan_resolve",
+            user_id: userId || "guest",
+            mode: IS_CLIENT_MODE ? "client" : "admin",
+            part_number: c.part_number,
+            part_name: c.part_name,
+            color_name: c.color_name,
+            score_info: lastScoreInfo
+          })
+        });
+        const data = await res.json();
+        const pause = renderScanResponse(data, lastFrameSignature);
+        if (!pause) {
+          requireSceneChange = true;
+          resumeAutoIfNeeded();
+        }
       } catch (err) {
         resultCard.innerHTML = `<div class="status-text" style="color:#ff453a;">Ошибка сети: ${err.message}</div>`;
-        requireSceneChange = false;
-      } finally {
-        isScanning = false;
-        scanBtn.disabled = false;
-        scanBtn.textContent = "📷 Распознать";
-
-        if (isHybridActive && !needChoicePause && !wasAutoPaused) {
-          scheduleNextHybridCycle(HYBRID_DELAY_MS);
-        }
       }
     }
 
